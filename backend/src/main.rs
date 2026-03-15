@@ -2,15 +2,15 @@ mod db;
 mod html;
 
 use actix_web::{
+	App, HttpRequest, HttpResponse, HttpServer, Responder,
 	body::MessageBody,
-	cookie::{time, Cookie},
+	cookie::{Cookie, time},
 	get,
 	http::StatusCode,
 	web::{Data, Path, Query},
-	App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use chrono::{DateTime, TimeZone, Utc};
-use common::{from_base_64, Competitors, PdfRequest, RoundInfo};
+use common::{Competitors, PdfRequest, RoundInfo, from_base_64};
 use db::DB;
 use futures::future::FutureExt;
 use rustls::{Certificate, PrivateKey, ServerConfig};
@@ -102,16 +102,20 @@ async fn root(http: HttpRequest, db: Data<Arc<Mutex<DB>>>) -> impl Responder {
 
 #[get("/favicon.ico")]
 async fn favicon() -> impl Responder {
-	catch!(HttpResponse::build(StatusCode::OK)
-		.content_type("image/jpg")
-		.body(&include_bytes!("../../frontend/favicon.ico")[..]))
+	catch!(
+		HttpResponse::build(StatusCode::OK)
+			.content_type("image/jpg")
+			.body(&include_bytes!("../../frontend/favicon.ico")[..])
+	)
 }
 
 #[get("/css")]
 async fn css() -> impl Responder {
-	catch!(HttpResponse::build(StatusCode::OK)
-		.content_type("text/css")
-		.body(include_str!("../../frontend/html_src/style.css")))
+	catch!(
+		HttpResponse::build(StatusCode::OK)
+			.content_type("text/css")
+			.body(include_str!("../../frontend/html_src/style.css"))
+	)
 }
 
 #[derive(Deserialize)]
@@ -181,9 +185,13 @@ async fn competition(
 	path: Path<String>,
 ) -> impl Responder {
 	catch!(
-    let cookie = get_cookie(&http).unwrap();
+    let Some(cookie) = get_cookie(&http) else {
+        return HttpResponse::TemporaryRedirect().append_header(("Location", "https://scorecards.danskspeedcubingforening.dk/")).await.unwrap();
+    };
     let mut lock = db.lock().await;
-    let session = lock.session_mut(cookie.value()).unwrap();
+    let Some(session) = lock.session_mut(cookie.value()) else {
+        return HttpResponse::TemporaryRedirect().append_header(("Location", "https://scorecards.danskspeedcubingforening.dk/")).await.unwrap();
+    };
     let id = path.into_inner();
     session.wcif_force_download(&id).await;
     let wcif = session.wcif_mut(&id).await;
@@ -234,9 +242,13 @@ async fn round(
 ) -> impl Responder {
 	catch!(
     let (competition_id, event_id, round_no) = path.into_inner();
-    let cookie = get_cookie(&http).unwrap();
+    let Some(cookie) = get_cookie(&http) else {
+        return HttpResponse::TemporaryRedirect().append_header(("Location", "https://scorecards.danskspeedcubingforening.dk/")).await.unwrap();
+    };
     let mut lock = db.lock().await;
-    let session = lock.session_mut(cookie.value()).unwrap();
+    let Some(session) = lock.session_mut(cookie.value()) else {
+        return HttpResponse::TemporaryRedirect().append_header(("Location", "https://scorecards.danskspeedcubingforening.dk/")).await.unwrap();
+    };
     let wcif = session.wcif_mut(&competition_id).await;
     let delegates = wcif.reg_ids_of_delegates();
     let (competitors, names) =
@@ -283,10 +295,14 @@ async fn pdf(
 	catch!(
 	let pdf_request: PdfRequest = from_base_64(&query.into_inner().data);
 	let stages = Stages::new(pdf_request.stages as u32, pdf_request.stations as u32, pdf_request.seperate_stages);
-	let cookie = get_cookie(&http).unwrap();
+	let Some(cookie) = get_cookie(&http) else {
+		return HttpResponse::TemporaryRedirect().append_header(("Location", "https://scorecards.danskspeedcubingforening.dk/")).await.unwrap();
+	};
 	let auth_code = cookie.value();
 	let mut lock = db.lock().await;
-	let session = lock.session_mut(auth_code).unwrap();
+	let Some(session) = lock.session_mut(cookie.value()) else {
+		return HttpResponse::TemporaryRedirect().append_header(("Location", "https://scorecards.danskspeedcubingforening.dk/")).await.unwrap();
+	};
 	let oauth = unsafe { std::ptr::read(session.oauth_mut() as *mut _) };
 	let mut wcif_oauth = session
 		.remove_wcif(&pdf_request.competition)
