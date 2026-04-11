@@ -1,2 +1,1 @@
-called `Option::unwrap()` on a `None` valueat file: src/main.rs line: 180, column: 52
-check that your event and round number is correctat file: /home/daniel/.cargo/git/checkouts/wca_tools_lib-5501abcaca0061fa/ab6653d/wca_oauth/src/oauth.rs line: 300, column: 11
+Missing config_path argument at file: src/main.rs line: 378, column: 37
