@@ -5,16 +5,27 @@ use js_sys::Error;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{console::log_1, window, Event, Document, Element, HtmlInputElement, HtmlTableElement, HtmlTableRowElement, HtmlElement};
+use web_sys::{console::log_1, window, Event, Document, Element, HtmlInputElement, HtmlTableElement, HtmlTableRowElement, HtmlElement, PageTransitionEvent};
 
 #[wasm_bindgen]
 pub fn start(base_64: &str) {
     set_hook(Box::new(|p| log_1(&p.to_string().into())));
+    
+    // Re-register event handlers when page is restored from back-forward cache
+    let on_pageshow = Closure::wrap(Box::new(move |event: PageTransitionEvent| {
+        if event.persisted() {
+            redraw_round_config().unwrap();
+        }
+    }) as Box<dyn Fn(PageTransitionEvent)>);
+    window().unwrap().add_event_listener_with_callback("pageshow", on_pageshow.as_ref().unchecked_ref()).unwrap();
+    on_pageshow.forget(); // Keep the closure alive
+    
     let competitor_info: Competitors = from_base_64(base_64); 
-    let groups = make_groups(competitor_info.competitors,
-        competitor_info.delegates,
+    let groups = make_groups(&competitor_info.competitors,
+        &competitor_info.delegates,
         competitor_info.stages,
-        competitor_info.stations);
+        competitor_info.stations,
+        None);
     let round_config = RoundConfig {
         competition: competitor_info.competition,
         stages: competitor_info.stages,
@@ -24,6 +35,8 @@ pub fn start(base_64: &str) {
         event: competitor_info.event,
         round: competitor_info.round,
 	seperate_stages: competitor_info.seperate_stages,
+        competitors: competitor_info.competitors,
+        delegates: competitor_info.delegates,
     };
     unsafe {
         ROUND_CONFIG = Some(Arc::new(Mutex::new(round_config)));
@@ -31,10 +44,10 @@ pub fn start(base_64: &str) {
     redraw_round_config().unwrap();
 }
 
-fn make_groups(competitors: Vec<u64>, delegates: Vec<u64>, stages: u64, stations: u64) -> Vec<Vec<u64>> {
+fn make_groups(competitors: &[u64], delegates: &[u64], stages: u64, stations: u64, target_groups: Option<u64>) -> Vec<Vec<u64>> {
     let capacity = stages * stations;
-    let no_of_groups = (competitors.len() as u64 - 1 + capacity) / capacity;
-    let map: HashSet<_> = delegates.into_iter().collect();
+    let no_of_groups = target_groups.unwrap_or_else(|| (competitors.len() as u64 - 1 + capacity) / capacity).max(1);
+    let map: HashSet<_> = delegates.iter().cloned().collect();
     let mut competing_delegates: Vec<_> = competitors.iter().filter(|id| map.contains(&id)).cloned().collect();  
     let mut competing_non_delegates: Vec<_> = competitors.iter().filter(|id| !map.contains(&id)).cloned().collect(); 
     let delegate_distribution = distribution(competing_delegates.len() as u64, no_of_groups);
@@ -67,6 +80,8 @@ struct RoundConfig {
     event: String,
     round: u64,
     seperate_stages: bool,
+    competitors: Vec<u64>,
+    delegates: Vec<u64>,
 }
 
 fn move_competitor(event: Event) {
@@ -86,6 +101,26 @@ fn move_competitor(event: Event) {
     };
     spawn_local(t);
 
+}
+
+fn increase_groups() {
+    let t = async move {
+        get_round_config().lock()
+            .unwrap()
+            .add_group();
+        redraw_round_config().unwrap();
+    };
+    spawn_local(t);
+}
+
+fn decrease_groups() {
+    let t = async move {
+        get_round_config().lock()
+            .unwrap()
+            .remove_group();
+        redraw_round_config().unwrap();
+    };
+    spawn_local(t);
 }
 
 fn redraw_round_config() -> Result<(), Error> {
@@ -137,6 +172,35 @@ fn redraw_round_config() -> Result<(), Error> {
     let main = document().get_element_by_id("main")
         .unwrap();
     main.append_child(&table)?;
+
+    // Group count controls
+    let group_controls = document().create_element("div")?;
+    group_controls.set_attribute("style", "margin: 10px 0;")?;
+    
+    let decrease_group_btn = document().create_element("button")?;
+    decrease_group_btn.set_text_content(Some("- Remove Group"));
+    decrease_group_btn.set_id("decrease_groups");
+    if no_of_groups > 1 {
+        let closure = Closure::once(decrease_groups);
+        decrease_group_btn.add_event_listener_with_callback("click", closure.into_js_value().unchecked_ref())?;
+    } else {
+        decrease_group_btn.set_attribute("disabled", "true")?;
+    }
+    
+    let group_count_text = document().create_element("span")?;
+    group_count_text.set_text_content(Some(&format!(" Groups: {} ", no_of_groups)));
+    
+    let increase_group_btn = document().create_element("button")?;
+    increase_group_btn.set_text_content(Some("+ Add Group"));
+    increase_group_btn.set_id("increase_groups");
+    let closure = Closure::once(increase_groups);
+    increase_group_btn.add_event_listener_with_callback("click", closure.into_js_value().unchecked_ref())?;
+    
+    group_controls.append_child(&decrease_group_btn)?;
+    group_controls.append_child(&group_count_text)?;
+    group_controls.append_child(&increase_group_btn)?;
+    main.append_child(&group_controls)?;
+
     let submit = document().create_element("button")?;
     submit.set_text_content(Some("Submit!"));
     let closure = Closure::once(submit_on_click);
@@ -198,6 +262,18 @@ impl RoundConfig {
     fn move_competitor(&mut self, group: usize, number: usize, translation: isize) {
         let id = self.groups[group].remove(number);
         self.groups[(group as isize + translation) as usize].push(id);
+    }
+
+    fn add_group(&mut self) {
+        let new_count = self.groups.len() as u64 + 1;
+        self.groups = make_groups(&self.competitors, &self.delegates, self.stages, self.stations, Some(new_count));
+    }
+
+    fn remove_group(&mut self) {
+        if self.groups.len() > 1 {
+            let new_count = self.groups.len() as u64 - 1;
+            self.groups = make_groups(&self.competitors, &self.delegates, self.stages, self.stations, Some(new_count));
+        }
     }
 
     fn submit(&self) -> Result<&Vec<Vec<u64>>, String> {
